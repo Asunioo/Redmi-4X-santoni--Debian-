@@ -1,81 +1,119 @@
-name: Build Debian for Redmi 4X santoni
+name: Build Debian for Redmi 4X santoni 增强版
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: 安装依赖
         run: |
-          sudo apt update -y
-          sudo apt install -y debootstrap qemu-user-static binfmt-support
-          sudo apt install -y gcc-arm-linux-gnueabihf libssl-dev bc flex bison git make kmod cpio rsync
+          sudo apt update
+          sudo apt install -y \
+            debootstrap qemu-user-static binfmt-support \
+            gcc-arm-linux-gnueabihf libssl-dev bc \
+            flex bison git make kmod cpio rsync \
+            debian-archive-keyring parted dosfstools u-boot-tools
 
-      - name: Build Debian Image
+      - name: 构建 Debian 系统 + 内核 + 镜像
         run: |
           set -e
-          DEBIAN_VERSION="bookworm"
-          WORK_DIR="$HOME/debian-santoni"
-          OUTPUT_DIR="$WORK_DIR/output"
-          mkdir -p "$WORK_DIR"/{rootfs,boot,"$OUTPUT_DIR"}
+          WORKDIR="$HOME/debian"
+          mkdir -p "$WORKDIR"
+          cd "$WORKDIR"
 
-          # Build rootfs
-          sudo debootstrap --arch=armhf --foreign "$DEBIAN_VERSION" "$WORK_DIR"/rootfs http://mirrors.ustc.edu.cn/debian/
-          sudo cp /usr/bin/qemu-arm-static "$WORK_DIR"/rootfs/usr/bin/
-          sudo chroot "$WORK_DIR"/rootfs /debootstrap/debootstrap --second-stage
+          # ==============================================
+          # 构建 rootfs（使用清华源，加速）
+          # ==============================================
+          sudo debootstrap --arch=armhf --no-check-gpg --foreign bookworm rootfs https://mirrors.tuna.tsinghua.edu.cn/debian/
+          sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
+          sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
-          # Configure rootfs
-          sudo chroot "$WORK_DIR"/rootfs bash -c "
-            echo 'root:root' | chpasswd
-            echo 'deb http://mirrors.ustc.edu.cn/debian bookworm main contrib non-free-firmware' > /etc/apt/sources.list
-            apt update -y
-            apt install -y linux-firmware firmware-qcom-soc network-manager openssh-server
+          # ==============================================
+          # 增强配置：中文源 + 密码 + 预装软件 + SSH + 网络
+          # ==============================================
+          sudo chroot rootfs bash -c '
+            # 设置密码：root / root
+            echo "root:root" | chpasswd
+
+            # 清华软件源
+            cat > /etc/apt/sources.list <<EOF
+            deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
+            deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
+            deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
+            EOF
+
+            # 更新并安装必备工具
+            apt update
+            apt install -y \
+              ssh net-tools iproute2 iputils-ping \
+              network-manager iw wireless-tools \
+              sudo bash-completion wget curl \
+              nano systemd-resolved
+
+            # 启用服务
             systemctl enable ssh
-            apt clean
-          "
-          sudo rm -f "$WORK_DIR"/rootfs/usr/bin/qemu-arm-static
+            systemctl enable NetworkManager
+            systemctl enable systemd-resolved
 
-          # Compile kernel
-          git clone https://github.com/ultra-azu/linux-santoni.git -b 6.6.y "$WORK_DIR"/kernel
-          cd "$WORK_DIR"/kernel
+            # 清理
+            apt clean
+          '
+
+          sudo rm -f rootfs/usr/bin/qemu-arm-static
+
+          # ==============================================
+          # 编译内核
+          # ==============================================
+          git clone --depth=1 https://github.com/ultra-azu/linux-santoni.git -b 6.6.y kernel
+          cd kernel
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- santoni_defconfig
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage dtbs modules
-          sudo make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_PATH="$WORK_DIR"/rootfs modules_install
-          cp arch/arm/boot/zImage "$WORK_DIR"/boot/
-          cp arch/arm/boot/dts/qcom-msm8940-xiaomi-santoni.dtb "$WORK_DIR"/boot/
+          sudo make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_PATH=../rootfs modules_install
+          cp arch/arm/boot/zImage "$WORKDIR"/
+          cp arch/arm/dts/qcom-msm8940-xiaomi-santoni.dtb "$WORKDIR"/
 
-          # Make boot.img
-          cd "$WORK_DIR"
-          dd if=/dev/zero of="$OUTPUT_DIR"/boot.img bs=1M count=256
-          mkfs.ext2 -F "$OUTPUT_DIR"/boot.img
-          sudo mkdir -p /mnt/boot
-          sudo mount "$OUTPUT_DIR"/boot.img /mnt/boot
-          sudo cp boot/* /mnt/boot/
-          sudo mkdir -p /mnt/boot/extlinux
-          echo "default debian
+          # ==============================================
+          # 制作 boot.img
+          # ==============================================
+          cd "$WORKDIR"
+          mkdir -p bootfs
+          cp zImage qcom-msm8940-xiaomi-santoni.dtb bootfs/
+
+          cat > bootfs/extlinux.conf <<EOF
+          default debian
           label debian
             kernel /zImage
             fdt /qcom-msm8940-xiaomi-santoni.dtb
-            append root=/dev/mmcblk0p22 rw rootwait" | sudo tee /mnt/boot/extlinux/extlinux.conf
+            append root=/dev/mmcblk0p22 rw rootwait console=tty1
+          EOF
+
+          dd if=/dev/zero of=boot.img bs=1M count=256
+          mkfs.ext2 -F boot.img
+          mkdir -p /mnt/boot
+          sudo mount boot.img /mnt/boot
+          sudo cp -r bootfs/* /mnt/boot/
           sudo umount /mnt/boot
 
-          # Make rootfs.img
-          dd if=/dev/zero of="$OUTPUT_DIR"/rootfs.img bs=1M count=8192
-          mkfs.ext4 -F "$OUTPUT_DIR"/rootfs.img
-          sudo mkdir -p /mnt/root
-          sudo mount "$OUTPUT_DIR"/rootfs.img /mnt/root
-          sudo tar -cf - -C "$WORK_DIR"/rootfs . | sudo tar -xf - -C /mnt/root
+          # ==============================================
+          # 制作 rootfs.img（8GB，足够装 Docker/1Panel）
+          # ==============================================
+          dd if=/dev/zero of=rootfs.img bs=1M count=8192
+          mkfs.ext4 -F rootfs.img
+          mkdir -p /mnt/root
+          sudo mount rootfs.img /mnt/root
+          sudo cp -a rootfs/* /mnt/root/
           sudo umount /mnt/root
 
-      - name: Upload Images
+      # ==============================================
+      # 输出可直接刷机的文件
+      # ==============================================
+      - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: debian-santoni-images
-          path: /home/runner/debian-santoni/output/
-
+          name: debian-santoni-enhanced
+          path: |
+            /home/runner/debian/boot.img
+            /home/runner/debian/rootfs.img
