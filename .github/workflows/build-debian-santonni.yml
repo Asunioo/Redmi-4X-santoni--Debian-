@@ -1,0 +1,127 @@
+name: Build Debian for Redmi 4X (santoni)
+
+on:
+  push:
+    branches: [ main ]          # 推送到 main 分支触发
+    paths:
+      - '.github/workflows/*'   # 仅修改 Action 配置时触发（可选）
+  workflow_dispatch:            # 手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04       # 基于 Ubuntu 22.04 编译
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update && sudo apt install -y \
+            debootstrap qemu-user-static binfmt-support \
+            parted dosfstools mtools u-boot-tools \
+            gcc-arm-linux-gnueabihf libssl-dev bc \
+            flex bison git make kmod cpio rsync
+
+      - name: Configure Build Parameters
+        id: config
+        run: |
+          echo "DEBIAN_VERSION=bookworm" >> $GITHUB_ENV
+          echo "KERNEL_BRANCH=6.6.y" >> $GITHUB_ENV
+          echo "ROOTFS_SIZE=8192" >> $GITHUB_ENV  # 8G
+          echo "BOOTFS_SIZE=256" >> $GITHUB_ENV   # 256M
+          echo "WORK_DIR=$HOME/debian-santoni" >> $GITHUB_ENV
+          echo "OUTPUT_DIR=$HOME/debian-santoni/output" >> $GITHUB_ENV
+          echo "KERNEL_REPO=https://github.com/ultra-azu/linux-santoni.git" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV  # 构建日期
+
+      - name: Build Debian Rootfs
+        run: |
+          mkdir -p ${{ env.WORK_DIR }}/{rootfs,boot,${{ env.OUTPUT_DIR }}}
+          cd ${{ env.WORK_DIR }}
+
+          # 初始化 armhf rootfs
+          sudo debootstrap --arch=armhf --foreign ${{ env.DEBIAN_VERSION }} rootfs http://mirrors.ustc.edu.cn/debian/
+          sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
+          sudo chroot rootfs /debootstrap/debootstrap --second-stage
+
+          # 配置 rootfs 环境
+          sudo chroot rootfs bash -c "
+            echo 'root:root' | chpasswd
+            cat > /etc/apt/sources.list <<EOF
+deb http://mirrors.ustc.edu.cn/debian ${{ env.DEBIAN_VERSION }} main contrib non-free-firmware
+deb http://mirrors.ustc.edu.cn/debian-security ${{ env.DEBIAN_VERSION }}-security main contrib non-free-firmware
+EOF
+            apt update && apt install -y \
+              linux-firmware firmware-qcom-soc firmware-qcom-wlan \
+              network-manager openssh-server sudo vim net-tools iputils-ping
+            systemctl enable ssh
+            apt clean
+          "
+          sudo rm -f rootfs/usr/bin/qemu-arm-static
+
+      - name: Compile Santoni Kernel
+        run: |
+          cd ${{ env.WORK_DIR }}
+          # 克隆内核源码
+          git clone -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
+          cd kernel
+          # 编译内核、dtb、模块
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- santoni_defconfig
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage dtbs modules
+          # 安装模块到 rootfs
+          sudo make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+            INSTALL_MOD_PATH=../rootfs modules_install
+          # 复制内核和 dtb 到 boot 目录
+          sudo cp arch/arm/boot/zImage ../boot/
+          sudo cp arch/arm/boot/dts/qcom-msm8940-xiaomi-santoni.dtb ../boot/
+          # 制作 initramfs
+          cd ../boot
+          sudo update-initramfs -c -k $(ls ../rootfs/lib/modules/) -d ../rootfs/ -o initramfs.cpio.gz
+
+      - name: Package Fastboot Images
+        run: |
+          cd ${{ env.WORK_DIR }}
+          # 制作 boot.img
+          dd if=/dev/zero of=${{ env.OUTPUT_DIR }}/boot.img bs=1M count=${{ env.BOOTFS_SIZE }}
+          mkfs.ext2 ${{ env.OUTPUT_DIR }}/boot.img
+          sudo mkdir -p /mnt/boot
+          sudo mount ${{ env.OUTPUT_DIR }}/boot.img /mnt/boot
+          sudo cp boot/* /mnt/boot/
+          # 写入 extlinux.conf
+          sudo mkdir -p /mnt/boot/extlinux
+          sudo cat > /mnt/boot/extlinux/extlinux.conf <<EOF
+default debian
+label debian
+  kernel /zImage
+  fdt /qcom-msm8940-xiaomi-santoni.dtb
+  initrd /initramfs.cpio.gz
+  append root=/dev/mmcblk0p22 rw rootwait console=ttyMSM0,115200n8
+EOF
+          sudo umount /mnt/boot
+
+          # 制作 rootfs.img
+          dd if=/dev/zero of=${{ env.OUTPUT_DIR }}/rootfs.img bs=1M count=${{ env.ROOTFS_SIZE }}
+          mkfs.ext4 ${{ env.OUTPUT_DIR }}/rootfs.img
+          sudo mkdir -p /mnt/root
+          sudo mount ${{ env.OUTPUT_DIR }}/rootfs.img /mnt/root
+          sudo tar -czf - -C rootfs . | sudo tar -xzf - -C /mnt/root
+          sudo umount /mnt/root
+
+          # 压缩镜像（减小体积）
+          cd ${{ env.OUTPUT_DIR }}
+          tar -czf debian-santoni-${{ env.BUILD_DATE }}.tar.gz boot.img rootfs.img
+
+      - name: Upload to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.BUILD_DATE }}
+          name: Debian for Santoni ${{ env.BUILD_DATE }}
+          files: ${{ env.OUTPUT_DIR }}/debian-santoni-${{ env.BUILD_DATE }}.tar.gz
+          body: |
+            - Redmi 4X (santoni) 原生 Debian 镜像
+            - Rootfs 大小: ${{ env.ROOTFS_SIZE }}M
+            - Bootfs 大小: ${{ env.BOOTFS_SIZE }}M
+            - 内核版本: ${{ env.KERNEL_BRANCH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub 自动生成的 Token
+
