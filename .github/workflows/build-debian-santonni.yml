@@ -12,83 +12,70 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y \
-            debootstrap qemu-user-static binfmt-support \
-            gcc-arm-linux-gnueabihf libssl-dev bc \
-            flex bison git make kmod cpio rsync \
-            debian-archive-keyring parted dosfstools u-boot-tools
+            debootstrap \
+            qemu-user-static \
+            binfmt-support \
+            gcc-arm-linux-gnueabihf \
+            libssl-dev \
+            bc \
+            flex \
+            bison \
+            git \
+            make \
+            kmod \
+            cpio \
+            rsync \
+            debian-archive-keyring \
+            parted \
+            dosfstools \
+            u-boot-tools
 
-      - name: 构建 Debian 系统 + 内核 + 镜像
+      - name: 构建 Debian + 内核 + 刷机镜像
         run: |
           set -e
           WORKDIR="$HOME/debian"
           mkdir -p "$WORKDIR"
           cd "$WORKDIR"
 
-          # ==============================================
-          # 构建 rootfs（使用清华源，加速）
-          # ==============================================
           sudo debootstrap --arch=armhf --no-check-gpg --foreign bookworm rootfs https://mirrors.tuna.tsinghua.edu.cn/debian/
           sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
           sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
-          # ==============================================
-          # 增强配置：中文源 + 密码 + 预装软件 + SSH + 网络
-          # ==============================================
           sudo chroot rootfs bash -c '
-            # 设置密码：root / root
             echo "root:root" | chpasswd
-
-            # 清华软件源
             cat > /etc/apt/sources.list <<EOF
-            deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
-            deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
-            deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
-            EOF
-
-            # 更新并安装必备工具
+deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
+deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
+deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
+EOF
             apt update
-            apt install -y \
-              ssh net-tools iproute2 iputils-ping \
-              network-manager iw wireless-tools \
-              sudo bash-completion wget curl \
-              nano systemd-resolved
-
-            # 启用服务
+            apt install -y ssh net-tools iproute2 iputils-ping network-manager iw wireless-tools sudo bash-completion wget curl nano
             systemctl enable ssh
             systemctl enable NetworkManager
-            systemctl enable systemd-resolved
-
-            # 清理
             apt clean
           '
 
           sudo rm -f rootfs/usr/bin/qemu-arm-static
 
-          # ==============================================
-          # 编译内核
-          # ==============================================
-          git clone --depth=1 https://github.com/ultra-azu/linux-santoni.git -b 6.6.y kernel
+          git clone --depth=1 https://github.com/MrArtemSid/linux-msm89x7.git -b main kernel
           cd kernel
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- santoni_defconfig
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage dtbs modules
           sudo make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_PATH=../rootfs modules_install
           cp arch/arm/boot/zImage "$WORKDIR"/
-          cp arch/arm/dts/qcom-msm8940-xiaomi-santoni.dtb "$WORKDIR"/
+          cp arch/arm/boot/dts/qcom/qcom-msm8940-xiaomi-santoni.dtb "$WORKDIR"/
 
-          # ==============================================
-          # 制作 boot.img
-          # ==============================================
           cd "$WORKDIR"
           mkdir -p bootfs
           cp zImage qcom-msm8940-xiaomi-santoni.dtb bootfs/
 
           cat > bootfs/extlinux.conf <<EOF
-          default debian
-          label debian
-            kernel /zImage
-            fdt /qcom-msm8940-xiaomi-santoni.dtb
-            append root=/dev/mmcblk0p22 rw rootwait console=tty1
-          EOF
+default debian
+label debian
+  kernel /zImage
+  fdt /qcom-msm8940-xiaomi-santoni.dtb
+  append root=/dev/mmcblk0p22 rw rootwait console=tty1
+EOF
 
           dd if=/dev/zero of=boot.img bs=1M count=256
           mkfs.ext2 -F boot.img
@@ -97,9 +84,6 @@ jobs:
           sudo cp -r bootfs/* /mnt/boot/
           sudo umount /mnt/boot
 
-          # ==============================================
-          # 制作 rootfs.img（8GB，足够装 Docker/1Panel）
-          # ==============================================
           dd if=/dev/zero of=rootfs.img bs=1M count=8192
           mkfs.ext4 -F rootfs.img
           mkdir -p /mnt/root
@@ -107,10 +91,7 @@ jobs:
           sudo cp -a rootfs/* /mnt/root/
           sudo umount /mnt/root
 
-      # ==============================================
-      # 输出可直接刷机的文件
-      # ==============================================
-      - name: 上传刷机包
+      - name: 上传可刷机镜像
         uses: actions/upload-artifact@v4
         with:
           name: debian-santoni-enhanced
