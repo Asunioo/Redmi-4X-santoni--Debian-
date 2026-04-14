@@ -5,7 +5,7 @@ on:
     branches: [ main ]          # 推送到 main 分支触发
     paths:
       - '.github/workflows/*'   # 仅修改 Action 配置时触发（可选）
-  workflow_dispatch:            # 手动触发1
+  workflow_dispatch:            # 手动触发
 
 jobs:
   build:
@@ -124,4 +124,3 @@ EOF
             - 内核版本: ${{ env.KERNEL_BRANCH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub 自动生成的 Token
-
