@@ -48,9 +48,9 @@ jobs:
           sudo chroot rootfs bash -c "
             echo 'root:root' | chpasswd
             cat > /etc/apt/sources.list <<EOF
-deb http://mirrors.ustc.edu.cn/debian ${{ env.DEBIAN_VERSION }} main contrib non-free-firmware
-deb http://mirrors.ustc.edu.cn/debian-security ${{ env.DEBIAN_VERSION }}-security main contrib non-free-firmware
-EOF
+            deb http://mirrors.ustc.edu.cn/debian ${{ env.DEBIAN_VERSION }} main contrib non-free-firmware
+            deb http://mirrors.ustc.edu.cn/debian-security ${{ env.DEBIAN_VERSION }}-security main contrib non-free-firmware
+            EOF
             apt update && apt install -y \
               linux-firmware firmware-qcom-soc firmware-qcom-wlan \
               network-manager openssh-server sudo vim net-tools iputils-ping
@@ -90,13 +90,13 @@ EOF
           # 写入 extlinux.conf
           sudo mkdir -p /mnt/boot/extlinux
           sudo cat > /mnt/boot/extlinux/extlinux.conf <<EOF
-default debian
-label debian
-  kernel /zImage
-  fdt /qcom-msm8940-xiaomi-santoni.dtb
-  initrd /initramfs.cpio.gz
-  append root=/dev/mmcblk0p22 rw rootwait console=ttyMSM0,115200n8
-EOF
+          default debian
+          label debian
+             kernel /zImage
+             fdt /qcom-msm8940-xiaomi-santoni.dtb
+             initrd /initramfs.cpio.gz
+             append root=/dev/mmcblk0p22 rw rootwait console=ttyMSM0,115200n8
+          EOF
           sudo umount /mnt/boot
 
           # 制作 rootfs.img
