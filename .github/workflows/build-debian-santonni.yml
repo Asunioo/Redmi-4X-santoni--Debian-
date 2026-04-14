@@ -40,7 +40,7 @@ jobs:
 
           sudo rm -f rootfs/usr/bin/qemu-arm-static
 
-          git clone --depth=1 https://github.com/MrArtemSid/linux-msm89x7.git -b main kernel
+          git clone --depth=1 https://gitlab.com/postmarketOS/linux-postmarketos-qcom-msm8940.git -b v6.6 kernel
           cd kernel
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- santoni_defconfig
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage dtbs modules
@@ -81,4 +81,3 @@ jobs:
           path: |
             /home/runner/debian/boot.img
             /home/runner/debian/rootfs.img
-
