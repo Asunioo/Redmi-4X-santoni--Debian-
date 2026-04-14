@@ -5,7 +5,7 @@ on:
     branches: [ main ]          # 推送到 main 分支触发
     paths:
       - '.github/workflows/*'   # 仅修改 Action 配置时触发（可选）
-  workflow_dispatch:            # 手动触发
+  workflow_dispatch:            # 手动触发1
 
 jobs:
   build:
