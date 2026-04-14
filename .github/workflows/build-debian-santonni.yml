@@ -1,4 +1,4 @@
-name: Build Debian for Redmi 4X santoni 增强版
+name: Build Debian for Redmi 4X santoni
 on:
   workflow_dispatch:
 
@@ -8,29 +8,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装依赖
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            debootstrap \
-            qemu-user-static \
-            binfmt-support \
-            gcc-arm-linux-gnueabihf \
-            libssl-dev \
-            bc \
-            flex \
-            bison \
-            git \
-            make \
-            kmod \
-            cpio \
-            rsync \
-            debian-archive-keyring \
-            parted \
-            dosfstools \
-            u-boot-tools
+          sudo apt install -y debootstrap qemu-user-static binfmt-support gcc-arm-linux-gnueabihf libssl-dev bc flex bison git make kmod cpio rsync debian-archive-keyring parted dosfstools u-boot-tools
 
-      - name: 构建 Debian + 内核 + 刷机镜像
+      - name: Build Debian
         run: |
           set -e
           WORKDIR="$HOME/debian"
@@ -42,17 +25,17 @@ jobs:
           sudo chroot rootfs /debootstrap/debootstrap --second-stage
 
           sudo chroot rootfs bash -c '
-            echo "root:root" | chpasswd
-            cat > /etc/apt/sources.list <<EOF
-deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
-deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
-deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
-EOF
-            apt update
-            apt install -y ssh net-tools iproute2 iputils-ping network-manager iw wireless-tools sudo bash-completion wget curl nano
-            systemctl enable ssh
-            systemctl enable NetworkManager
-            apt clean
+          echo "root:root" | chpasswd
+          cat > /etc/apt/sources.list <<EOF
+          deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
+          deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
+          deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
+          EOF
+          apt update
+          apt install -y ssh net-tools iproute2 iputils-ping network-manager iw wireless-tools sudo bash-completion wget curl nano
+          systemctl enable ssh
+          systemctl enable NetworkManager
+          apt clean
           '
 
           sudo rm -f rootfs/usr/bin/qemu-arm-static
@@ -70,12 +53,12 @@ EOF
           cp zImage qcom-msm8940-xiaomi-santoni.dtb bootfs/
 
           cat > bootfs/extlinux.conf <<EOF
-default debian
-label debian
-  kernel /zImage
-  fdt /qcom-msm8940-xiaomi-santoni.dtb
-  append root=/dev/mmcblk0p22 rw rootwait console=tty1
-EOF
+          default debian
+          label debian
+            kernel /zImage
+            fdt /qcom-msm8940-xiaomi-santoni.dtb
+            append root=/dev/mmcblk0p22 rw rootwait console=tty1
+          EOF
 
           dd if=/dev/zero of=boot.img bs=1M count=256
           mkfs.ext2 -F boot.img
@@ -91,10 +74,11 @@ EOF
           sudo cp -a rootfs/* /mnt/root/
           sudo umount /mnt/root
 
-      - name: 上传可刷机镜像
+      - name: Upload images
         uses: actions/upload-artifact@v4
         with:
-          name: debian-santoni-enhanced
+          name: debian-santoni-final
           path: |
             /home/runner/debian/boot.img
             /home/runner/debian/rootfs.img
+
