@@ -1,12 +1,9 @@
 name: Build Redmi 4X (santoni) Boot.img
-
 on:
   push:
     branches: [ main ]
     paths:
       - '.github/workflows/build-santoni-bootimg.yml'
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -14,94 +11,76 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      KERNEL_DIR: linux-santoni
+      DTB_NAME: msm8940-xiaomi-santoni.dtb
+
     steps:
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          sudo apt update && sudo apt upgrade -y
+          sudo apt update -y
           sudo apt install -y \
             git build-essential gcc-aarch64-linux-gnu \
-            bc bison flex libssl-dev python3-pip \
-            mkbootimg cpio kmod
+            bc bison flex libssl-dev python3 \
+            cpio kmod mkbootimg abootimg dtbtool
 
-      - name: Clone Kernel & Santoni Device Tree
+      - name: Clone LineageOS kernel for santoni
         run: |
-          # 克隆支持 santoni 的内核分支（LineageOS 内核，自带设备树）
-          git clone --depth 1 --branch lineage-20.0 \
-            https://github.com/LineageOS/android_kernel_xiaomi_msm8940.git linux-santoni
-          cd linux-santoni
-          # 应用默认配置
-          make ARCH=arm64 santoni_defconfig
+          git clone --depth=1 -b lineage-20.0 \
+            https://github.com/LineageOS/android_kernel_xiaomi_msm8940.git ${KERNEL_DIR}
 
-      - name: Configure Kernel for Debian
+      - name: Make santoni_defconfig
         run: |
-          cd linux-santoni
-          # 启用 Debian 根文件系统所需功能
-          cat >> .config << EOF
-CONFIG_DEVTMPFS=y
-CONFIG_SYSFS=y
-CONFIG_PROC_FS=y
-CONFIG_TMPFS=y
-CONFIG_EXT4_FS=y
-CONFIG_VFAT_FS=y
-CONFIG_MMC_SDHCI_QCOM=y
-CONFIG_QCOM_WCNSS_CTRL=y
-CONFIG_SERIAL_QCOM_MSM=y
-CONFIG_DRM_MSM=y
-CONFIG_WLAN=y
-CONFIG_QCA_WIFI_PHY=y
-EOF
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          cd ${KERNEL_DIR}
+          make ARCH=${ARCH} santoni_defconfig
 
-      - name: Compile Kernel & DTB
+      - name: Build kernel Image.gz dtbs modules
         run: |
-          cd linux-santoni
-          # 编译内核、模块、设备树（LineageOS 分支已包含 msm8940-santoni.dtb）
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          cd ${KERNEL_DIR}
+          make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} \
             Image.gz dtbs modules
-          # 验证设备树是否生成
-          ls -l arch/arm64/boot/dts/qcom/msm8940-santoni.dtb
 
-      - name: Build Initramfs (with Modules)
+      - name: Show DTB file
         run: |
-          mkdir -p initramfs/{lib/modules,bin,sbin,etc}
-          cd linux-santoni
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            INSTALL_MOD_PATH=../initramfs modules_install
-          cd ../initramfs
-          # 编写 init 脚本
-          cat > init << 'EOF'
+          cd ${KERNEL_DIR}
+          ls -lh arch/arm64/boot/dts/vendor/qcom/${DTB_NAME}
+
+      - name: Build minimal initramfs
+        run: |
+          mkdir -p initramfs/{bin,sbin,dev,proc,sys,lib}
+          cat > initramfs/init <<'EOF'
 #!/bin/sh
+mount -t devtmpfs devtmpfs /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-depmod -a $(uname -r)
+sleep 1
 exec switch_root /sysroot /sbin/init
 EOF
-          chmod +x init
-          # 打包 initramfs
-          find . -print0 | cpio --null -ov --format=newc | gzip -9 > ../initramfs.gz
+          chmod +x initramfs/init
+          cd initramfs
+          find . | cpio -H newc -o | gzip -9 > ../initramfs.gz
+          cd ..
 
-      - name: Generate boot.img (Santoni Compatible)
+      - name: Make boot.img for santoni
         run: |
-          # 使用编译好的设备树
-          DTB_PATH=linux-santoni/arch/arm64/boot/dts/qcom/msm8940-santoni.dtb
           mkbootimg \
-            --kernel linux-santoni/arch/arm64/boot/Image.gz \
+            --kernel ${KERNEL_DIR}/arch/arm64/boot/Image.gz \
             --ramdisk initramfs.gz \
-            --dtb $DTB_PATH \
+            --dtb ${KERNEL_DIR}/arch/arm64/boot/dts/vendor/qcom/${DTB_NAME} \
             --base 0x80000000 \
             --pagesize 2048 \
-            --cmdline "console=ttyMSM0,115200n8 root=/dev/mmcblk0p22 rootwait rw no_console_suspend" \
+            --cmdline "console=ttyMSM0,115200 root=/dev/mmcblk0p22 rootwait rw" \
             --output santoni-debian-boot.img
 
-      - name: Verify boot.img
+      - name: Check result
         run: |
           file santoni-debian-boot.img
-          echo "Boot.img build success: santoni-debian-boot.img"
+          echo "✅ Build success!"
 
-      - name: Upload Artifact
+      - name: Upload boot.img
         uses: actions/upload-artifact@v4
         with:
-          name: santoni-boot-img
+          name: santoni-boot.img
           path: santoni-debian-boot.img
           retention-days: 30
