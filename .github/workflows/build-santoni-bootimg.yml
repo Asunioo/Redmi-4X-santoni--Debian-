@@ -41,8 +41,8 @@ jobs:
 
       - name: Build minimal initramfs
         run: |
-          mkdir -p initramfs || { echo "Failed to create initramfs dir"; exit 1; }
-          cat > initramfs/init <<'EOF'
+mkdir -p initramfs || { echo "Failed to create initramfs dir"; exit 1; }
+cat > initramfs/init <<'EOF'
 #!/bin/sh
 mount -t devtmpfs devtmpfs /dev
 mount -t proc proc /proc
