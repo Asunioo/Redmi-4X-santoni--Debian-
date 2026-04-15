@@ -7,11 +7,13 @@ on:
       - '.github/workflows/build-santoni-bootimg.yml'
   pull_request:
     branches: [ main ]
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch:
 
 jobs:
   build-bootimg:
     runs-on: ubuntu-22.04
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Install Dependencies
         run: |
@@ -21,84 +23,72 @@ jobs:
             bc bison flex libssl-dev python3-pip \
             mkbootimg cpio kmod
 
-      - name: Clone Mainline Kernel (LTS)
+      - name: Clone Kernel & Santoni Device Tree
         run: |
-          # 选择 6.1 LTS 内核（兼容性最佳）
-          git clone --depth 1 --branch v6.1.90 \
-            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-santoni
+          # 克隆支持 santoni 的内核分支（LineageOS 内核，自带设备树）
+          git clone --depth 1 --branch lineage-20.0 \
+            https://github.com/LineageOS/android_kernel_xiaomi_msm8940.git linux-santoni
           cd linux-santoni
+          # 应用默认配置
+          make ARCH=arm64 santoni_defconfig
 
-      - name: Configure Kernel for Redmi 4X
+      - name: Configure Kernel for Debian
         run: |
           cd linux-santoni
-          # 基础 arm64 配置
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          # 启用 MSM8940/Redmi 4X 硬件支持
+          # 启用 Debian 根文件系统所需功能
           cat >> .config << EOF
-          CONFIG_MSM8940=y
-          CONFIG_ARCH_QCOM=y
-          CONFIG_QCOM_SOC_COMMON=y
-          CONFIG_QCOM_GPIOMUX=y
-          CONFIG_QCOM_SPMI=y
-          CONFIG_QCOM_PMIC=y
-          CONFIG_QCOM_RPM=y
-          CONFIG_QCOM_SMD=y
-          CONFIG_QCOM_WCNSS_CTRL=y
-          CONFIG_WLAN=y
-          CONFIG_WLAN_VENDOR_QCOM=y
-          CONFIG_QCA_WIFI_PHY=y
-          CONFIG_QCOM_SSBI=y
-          CONFIG_QCOM_SMEM=y
-          CONFIG_MMC=y
-          CONFIG_MMC_SDHCI=y
-          CONFIG_MMC_SDHCI_QCOM=y
-          CONFIG_SERIAL_QCOM_MSM=y
-          CONFIG_FB_SIMPLE=y
-          CONFIG_DRM=y
-          CONFIG_DRM_MSM=y
-          CONFIG_DRM_MSM_GPU=y
-          EOF
-          # 生成最终配置
+CONFIG_DEVTMPFS=y
+CONFIG_SYSFS=y
+CONFIG_PROC_FS=y
+CONFIG_TMPFS=y
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_MMC_SDHCI_QCOM=y
+CONFIG_QCOM_WCNSS_CTRL=y
+CONFIG_SERIAL_QCOM_MSM=y
+CONFIG_DRM_MSM=y
+CONFIG_WLAN=y
+CONFIG_QCA_WIFI_PHY=y
+EOF
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
       - name: Compile Kernel & DTB
         run: |
           cd linux-santoni
-          # 编译内核、模块、设备树
+          # 编译内核、模块、设备树（LineageOS 分支已包含 msm8940-santoni.dtb）
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             Image.gz dtbs modules
-          # 安装模块到临时目录
-          mkdir -p ../kernel-modules/lib
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            INSTALL_MOD_PATH=../kernel-modules modules_install
+          # 验证设备树是否生成
+          ls -l arch/arm64/boot/dts/qcom/msm8940-santoni.dtb
 
-      - name: Build Initramfs (带驱动模块)
+      - name: Build Initramfs (with Modules)
         run: |
-          # 拷贝内核模块到 initramfs 构建目录
           mkdir -p initramfs/{lib/modules,bin,sbin,etc}
-          cp -r kernel-modules/lib/modules/* initramfs/lib/modules/
-          # 生成 initramfs 配置
-          cat > initramfs/init << 'EOF'
-          #!/bin/sh
-          mount -t proc proc /proc
-          mount -t sysfs sysfs /sys
-          mount -t devtmpfs devtmpfs /dev
-          depmod -a $(uname -r)
-          exec switch_root /sysroot /sbin/init
-          EOF
-          chmod +x initramfs/init
+          cd linux-santoni
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            INSTALL_MOD_PATH=../initramfs modules_install
+          cd ../initramfs
+          # 编写 init 脚本
+          cat > init << 'EOF'
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+depmod -a $(uname -r)
+exec switch_root /sysroot /sbin/init
+EOF
+          chmod +x init
           # 打包 initramfs
-          cd initramfs
           find . -print0 | cpio --null -ov --format=newc | gzip -9 > ../initramfs.gz
-          cd ..
 
-      - name: Generate boot.img (适配 Redmi 4X)
+      - name: Generate boot.img (Santoni Compatible)
         run: |
-          # 关键参数：Redmi 4X 分区表 + 内存布局
+          # 使用编译好的设备树
+          DTB_PATH=linux-santoni/arch/arm64/boot/dts/qcom/msm8940-santoni.dtb
           mkbootimg \
             --kernel linux-santoni/arch/arm64/boot/Image.gz \
             --ramdisk initramfs.gz \
-            --dtb linux-santoni/arch/arm64/boot/dts/qcom/msm8940-santoni.dtb \
+            --dtb $DTB_PATH \
             --base 0x80000000 \
             --pagesize 2048 \
             --cmdline "console=ttyMSM0,115200n8 root=/dev/mmcblk0p22 rootwait rw no_console_suspend" \
@@ -106,10 +96,8 @@ jobs:
 
       - name: Verify boot.img
         run: |
-          # 检查 boot.img 结构
           file santoni-debian-boot.img
-          # 输出信息
-          echo "Boot.img 构建完成：santoni-debian-boot.img"
+          echo "Boot.img build success: santoni-debian-boot.img"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
