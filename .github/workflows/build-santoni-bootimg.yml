@@ -41,14 +41,14 @@ jobs:
 
       - name: Build minimal initramfs
         run: |
-mkdir -p initramfs || { echo "Failed to create initramfs dir"; exit 1; }
-cat > initramfs/init <<'EOF'
-#!/bin/sh
-mount -t devtmpfs devtmpfs /dev
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-exec switch_root /sysroot /sbin/init
-EOF
+          mkdir -p initramfs || { echo "Failed to create initramfs dir"; exit 1; }
+          cat > initramfs/init <<'EOF'
+          #!/bin/sh
+          mount -t devtmpfs devtmpfs /dev
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          exec switch_root /sysroot /sbin/init
+          EOF
           chmod +x initramfs/init || sudo chmod +x initramfs/init
           cd initramfs || { echo "Failed to cd into initramfs"; exit 1; }
           # 修复后的第47行
