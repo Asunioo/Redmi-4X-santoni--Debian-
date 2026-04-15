@@ -22,7 +22,7 @@ jobs:
 
       - name: Clone LineageOS kernel for santoni
         run: |
-          git clone --depth=1 -b lineage-20.0 https://github.com/LineageOS/android_kernel_xiaomi_msm8940.git linux-santoni
+          git clone --depth=1 -b lineage-20.0 https://github.com/LineageOS/android_kernel_xiaomi_msm8937.git linux-santoni
 
       - name: Make santoni_defconfig
         run: |
@@ -66,7 +66,7 @@ jobs:
           mkbootimg \
             --kernel linux-santoni/arch/arm64/boot/Image.gz \
             --ramdisk initramfs.gz \
-            --dtb linux-santoni/arch/arm64/boot/dts/vendor/qcom/msm8940-xiaomi-santoni.dtb \
+            --dtb linux-santoni/arch/arm64/boot/dts/vendor/qcom/msm8937-xiaomi-santoni.dtb \
             --base 0x80000000 \
             --pagesize 2048 \
             --cmdline "console=ttyMSM0,115200 root=/dev/mmcblk0p22 rootwait rw" \
