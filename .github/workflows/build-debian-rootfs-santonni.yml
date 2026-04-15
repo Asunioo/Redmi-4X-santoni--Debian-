@@ -7,7 +7,7 @@ on:
       - '.github/workflows/build-sd435-rootfs.yml'
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
 
 jobs:
   build-rootfs:
@@ -27,69 +27,59 @@ jobs:
 
       - name: Create Rootfs Image
         run: |
-          # 创建 4G ext4 镜像文件
           dd if=/dev/zero of=sd435-debian-rootfs.ext4 bs=1M count=4096
           sudo mkfs.ext4 -L rootfs sd435-debian-rootfs.ext4
-          # 创建挂载点
           sudo mkdir -p /mnt/rootfs
           sudo mount sd435-debian-rootfs.ext4 /mnt/rootfs
 
       - name: Bootstrap Debian Base System
         run: |
-          # 第一阶段：拉取 arm64 软件包
           sudo debootstrap --arch arm64 --foreign bookworm \
             /mnt/rootfs https://mirrors.tuna.tsinghua.edu.cn/debian/
-          # 复制 qemu 静态编译工具，实现 chroot 跨架构运行
           sudo cp /usr/bin/qemu-aarch64-static /mnt/rootfs/usr/bin/
-          # 挂载虚拟文件系统
+          # 修复挂载顺序 + 明确挂载 devpts
           sudo mount --bind /dev /mnt/rootfs/dev
+          sudo mount -t devpts devpts /mnt/rootfs/dev/pts
           sudo mount --bind /sys /mnt/rootfs/sys
           sudo mount --bind /proc /mnt/rootfs/proc
-          sudo mount --bind /dev/pts /mnt/rootfs/dev/pts
-          # 第二阶段：完成系统配置
           sudo chroot /mnt/rootfs /debootstrap/debootstrap --second-stage
 
       - name: Configure Rootfs (SD435 Specific)
         run: |
           sudo chroot /mnt/rootfs /bin/bash -c '
-            # 设置 root 密码（默认：debian-sd435）
             echo "root:debian-sd435" | chpasswd
-            # 配置清华 apt 源
             cat > /etc/apt/sources.list << EOF
           deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
           deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
           deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
           EOF
-            # 更新并安装 SD435 必备软件包
             apt update && apt install -y \
               linux-image-arm64 initramfs-tools udev \
               firmware-qcom-soc firmware-qcom-gpu firmware-qcom-media \
               network-manager openssh-server sudo vim iproute2 iputils-ping wget curl
-            # 配置 fstab（适配 EMMC/SD 卡）
             cat > /etc/fstab << EOF
           /dev/mmcblk0p2  /       ext4    defaults,noatime 0 1
           /dev/mmcblk0p1  /boot   vfat    defaults          0 2
           EOF
-            # 允许 root SSH 登录
             sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config
-            # 清理 apt 缓存，减小镜像体积
             apt clean && rm -rf /var/lib/apt/lists/*
           '
 
-      - name: Unmount and Package Rootfs
+      - name: Unmount with Fault Tolerance
         run: |
-          # 卸载虚拟文件系统
-          sudo umount /mnt/rootfs/dev/pts
-          sudo umount /mnt/rootfs/dev
-          sudo umount /mnt/rootfs/sys
-          sudo umount /mnt/rootfs/proc
-          sudo umount /mnt/rootfs
-          # 打包为 tar.gz 压缩包
+          # 关键修复：先检查是否挂载，再卸载，避免报错
+          mountpoint -q /mnt/rootfs/dev/pts && sudo umount /mnt/rootfs/dev/pts || true
+          mountpoint -q /mnt/rootfs/dev && sudo umount /mnt/rootfs/dev || true
+          mountpoint -q /mnt/rootfs/sys && sudo umount /mnt/rootfs/sys || true
+          mountpoint -q /mnt/rootfs/proc && sudo umount /mnt/rootfs/proc || true
+          mountpoint -q /mnt/rootfs && sudo umount /mnt/rootfs || true
+
+      - name: Package Rootfs
+        run: |
           sudo mkdir -p /tmp/rootfs-mount
           sudo mount sd435-debian-rootfs.ext4 /tmp/rootfs-mount
           sudo tar -C /tmp/rootfs-mount -czf sd435-debian-bookworm-rootfs.tar.gz .
           sudo umount /tmp/rootfs-mount
-          # 生成镜像校验和
           md5sum sd435-debian-bookworm-rootfs.tar.gz > sd435-rootfs.md5
 
       - name: Upload Artifacts
@@ -100,4 +90,4 @@ jobs:
             sd435-debian-bookworm-rootfs.tar.gz
             sd435-rootfs.md5
             sd435-debian-rootfs.ext4
-          retention-days: 30  # 制品保留 30 天
+          retention-days: 30
