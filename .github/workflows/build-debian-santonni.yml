@@ -1,83 +1,103 @@
-name: Build Debian for Redmi 4X santoni
+name: Build SD435 (MSM8940) Debian Rootfs
+
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-sd435-rootfs.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 手动触发
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  build-rootfs:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
-          sudo apt update
-          sudo apt install -y debootstrap qemu-user-static binfmt-support gcc-arm-linux-gnueabihf libssl-dev bc flex bison git make kmod cpio rsync debian-archive-keyring parted dosfstools u-boot-tools
+          sudo apt update && sudo apt upgrade -y
+          sudo apt install -y \
+            debootstrap qemu-user-static binfmt-support \
+            android-sdk-libsparse-utils kpartx dosfstools \
+            git build-essential libssl-dev bc \
+            tar gzip
 
-      - name: Build Debian
+      - name: Create Rootfs Image
         run: |
-          set -e
-          WORKDIR="$HOME/debian"
-          mkdir -p "$WORKDIR"
-          cd "$WORKDIR"
+          # 创建 4G ext4 镜像文件
+          dd if=/dev/zero of=sd435-debian-rootfs.ext4 bs=1M count=4096
+          sudo mkfs.ext4 -L rootfs sd435-debian-rootfs.ext4
+          # 创建挂载点
+          sudo mkdir -p /mnt/rootfs
+          sudo mount sd435-debian-rootfs.ext4 /mnt/rootfs
 
-          sudo debootstrap --arch=armhf --no-check-gpg --foreign bookworm rootfs https://mirrors.tuna.tsinghua.edu.cn/debian/
-          sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
-          sudo chroot rootfs /debootstrap/debootstrap --second-stage
+      - name: Bootstrap Debian Base System
+        run: |
+          # 第一阶段：拉取 arm64 软件包
+          sudo debootstrap --arch arm64 --foreign bookworm \
+            /mnt/rootfs https://mirrors.tuna.tsinghua.edu.cn/debian/
+          # 复制 qemu 静态编译工具，实现 chroot 跨架构运行
+          sudo cp /usr/bin/qemu-aarch64-static /mnt/rootfs/usr/bin/
+          # 挂载虚拟文件系统
+          sudo mount --bind /dev /mnt/rootfs/dev
+          sudo mount --bind /sys /mnt/rootfs/sys
+          sudo mount --bind /proc /mnt/rootfs/proc
+          sudo mount --bind /dev/pts /mnt/rootfs/dev/pts
+          # 第二阶段：完成系统配置
+          sudo chroot /mnt/rootfs /debootstrap/debootstrap --second-stage
 
-          sudo chroot rootfs bash -c '
-          echo "root:root" | chpasswd
-          cat > /etc/apt/sources.list <<EOF
+      - name: Configure Rootfs (SD435 Specific)
+        run: |
+          sudo chroot /mnt/rootfs /bin/bash -c '
+            # 设置 root 密码（默认：debian-sd435）
+            echo "root:debian-sd435" | chpasswd
+            # 配置清华 apt 源
+            cat > /etc/apt/sources.list << EOF
           deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
           deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
           deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
           EOF
-          apt update
-          apt install -y ssh net-tools iproute2 iputils-ping network-manager iw wireless-tools sudo bash-completion wget curl nano
-          systemctl enable ssh
-          systemctl enable NetworkManager
-          apt clean
+            # 更新并安装 SD435 必备软件包
+            apt update && apt install -y \
+              linux-image-arm64 initramfs-tools udev \
+              firmware-qcom-soc firmware-qcom-gpu firmware-qcom-media \
+              network-manager openssh-server sudo vim iproute2 iputils-ping wget curl
+            # 配置 fstab（适配 EMMC/SD 卡）
+            cat > /etc/fstab << EOF
+          /dev/mmcblk0p2  /       ext4    defaults,noatime 0 1
+          /dev/mmcblk0p1  /boot   vfat    defaults          0 2
+          EOF
+            # 允许 root SSH 登录
+            sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config
+            # 清理 apt 缓存，减小镜像体积
+            apt clean && rm -rf /var/lib/apt/lists/*
           '
 
-          sudo rm -f rootfs/usr/bin/qemu-arm-static
+      - name: Unmount and Package Rootfs
+        run: |
+          # 卸载虚拟文件系统
+          sudo umount /mnt/rootfs/dev/pts
+          sudo umount /mnt/rootfs/dev
+          sudo umount /mnt/rootfs/sys
+          sudo umount /mnt/rootfs/proc
+          sudo umount /mnt/rootfs
+          # 打包为 tar.gz 压缩包
+          sudo mkdir -p /tmp/rootfs-mount
+          sudo mount sd435-debian-rootfs.ext4 /tmp/rootfs-mount
+          sudo tar -C /tmp/rootfs-mount -czf sd435-debian-bookworm-rootfs.tar.gz .
+          sudo umount /tmp/rootfs-mount
+          # 生成镜像校验和
+          md5sum sd435-debian-bookworm-rootfs.tar.gz > sd435-rootfs.md5
 
-          git clone --depth=1 https://gitlab.com/postmarketOS/linux-postmarketos-qcom-msm8940.git -b v6.6 kernel
-          cd kernel
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- santoni_defconfig
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage dtbs modules
-          sudo make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- INSTALL_MOD_PATH=../rootfs modules_install
-          cp arch/arm/boot/zImage "$WORKDIR"/
-          cp arch/arm/boot/dts/qcom/qcom-msm8940-xiaomi-santoni.dtb "$WORKDIR"/
-
-          cd "$WORKDIR"
-          mkdir -p bootfs
-          cp zImage qcom-msm8940-xiaomi-santoni.dtb bootfs/
-
-          cat > bootfs/extlinux.conf <<EOF
-          default debian
-          label debian
-            kernel /zImage
-            fdt /qcom-msm8940-xiaomi-santoni.dtb
-            append root=/dev/mmcblk0p22 rw rootwait console=tty1
-          EOF
-
-          dd if=/dev/zero of=boot.img bs=1M count=256
-          mkfs.ext2 -F boot.img
-          mkdir -p /mnt/boot
-          sudo mount boot.img /mnt/boot
-          sudo cp -r bootfs/* /mnt/boot/
-          sudo umount /mnt/boot
-
-          dd if=/dev/zero of=rootfs.img bs=1M count=8192
-          mkfs.ext4 -F rootfs.img
-          mkdir -p /mnt/root
-          sudo mount rootfs.img /mnt/root
-          sudo cp -a rootfs/* /mnt/root/
-          sudo umount /mnt/root
-
-      - name: Upload images
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: debian-santoni-final
+          name: sd435-debian-rootfs
           path: |
-            /home/runner/debian/boot.img
-            /home/runner/debian/rootfs.img
+            sd435-debian-bookworm-rootfs.tar.gz
+            sd435-rootfs.md5
+            sd435-debian-rootfs.ext4
+          retention-days: 30  # 制品保留 30 天
