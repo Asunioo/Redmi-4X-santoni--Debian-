@@ -13,74 +13,63 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
-      KERNEL_DIR: linux-santoni
-      DTB_NAME: msm8940-xiaomi-santoni.dtb
 
     steps:
       - name: Install dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y \
-            git build-essential gcc-aarch64-linux-gnu \
-            bc bison flex libssl-dev python3 \
-            cpio kmod mkbootimg abootimg dtbtool
+          sudo apt install -y git build-essential gcc-aarch64-linux-gnu bc bison flex libssl-dev python3 cpio kmod mkbootimg
 
       - name: Clone LineageOS kernel for santoni
         run: |
-          git clone --depth=1 -b lineage-20.0 \
-            https://github.com/LineageOS/android_kernel_xiaomi_msm8940.git ${KERNEL_DIR}
+          git clone --depth=1 -b lineage-20.0 https://github.com/LineageOS/android_kernel_xiaomi_msm8940.git linux-santoni
 
       - name: Make santoni_defconfig
         run: |
-          cd ${KERNEL_DIR}
-          make ARCH=${ARCH} santoni_defconfig
+          cd linux-santoni
+          make ARCH=$ARCH santoni_defconfig
 
-      - name: Build kernel Image.gz dtbs modules
+      - name: Build kernel Image.gz dtbs
         run: |
-          cd ${KERNEL_DIR}
-          make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} \
-            Image.gz dtbs modules
+          cd linux-santoni
+          make -j$(nproc) ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE Image.gz dtbs
 
-      - name: Show DTB file
+      - name: List DTB to check path
         run: |
-          cd ${KERNEL_DIR}
-          ls -lh arch/arm64/boot/dts/vendor/qcom/${DTB_NAME}
+          cd linux-santoni
+          ls -l arch/arm64/boot/dts/vendor/qcom/
 
       - name: Build minimal initramfs
         run: |
-          mkdir -p initramfs/{bin,sbin,dev,proc,sys,lib}
+          mkdir -p initramfs
           cat > initramfs/init <<'EOF'
 #!/bin/sh
 mount -t devtmpfs devtmpfs /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-sleep 1
 exec switch_root /sysroot /sbin/init
 EOF
           chmod +x initramfs/init
           cd initramfs
-          find . | cpio -H newc -o | gzip -9 > ../initramfs.gz
-          cd ..
+          find . -print0 | cpio --null -ov --format=newc | gzip -9 > ../initramfs.gz
 
-      - name: Make boot.img for santoni
+      - name: Make boot.img
         run: |
           mkbootimg \
-            --kernel ${KERNEL_DIR}/arch/arm64/boot/Image.gz \
+            --kernel linux-santoni/arch/arm64/boot/Image.gz \
             --ramdisk initramfs.gz \
-            --dtb ${KERNEL_DIR}/arch/arm64/boot/dts/vendor/qcom/${DTB_NAME} \
+            --dtb linux-santoni/arch/arm64/boot/dts/vendor/qcom/msm8940-xiaomi-santoni.dtb \
             --base 0x80000000 \
             --pagesize 2048 \
             --cmdline "console=ttyMSM0,115200 root=/dev/mmcblk0p22 rootwait rw" \
             --output santoni-debian-boot.img
 
       - name: Check result
-        run: |
-          file santoni-debian-boot.img
-          echo "✅ Build success!"
+        run: file santoni-debian-boot.img
 
-      - name: Upload boot.img
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: santoni-boot.img
+          name: santoni-boot-img
           path: santoni-debian-boot.img
           retention-days: 30
