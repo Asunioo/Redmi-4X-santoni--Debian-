@@ -1,0 +1,85 @@
+name: Build Debian rootfs for Redmi 4X (santoni)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap qemu-user-static binfmt-support wget curl
+
+      # 可选：如果你有自己的设备支持脚本（如初始化脚本、fstab、网络配置等）
+      # - name: Clone device support scripts (example: from GitHub)
+      #   run: |
+      #     git clone https://github.com/yourname/santoni-debian-config.git device-config
+
+      - name: Verify Debian mirror accessibility
+        run: |
+          echo "Checking if Debian mirror is reachable..."
+          wget -q --spider http://deb.debian.org/debian/dists/stable/Release
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Debian mirror unreachable!"
+            exit 1
+          fi
+          echo "Debian mirror is OK."
+
+      - name: Create build directory
+        run: mkdir -p debian-rootfs
+
+      - name: Bootstrap Debian armhf rootfs
+        run: |
+          sudo debootstrap \
+            --arch=armhf \
+            --foreign \
+            --include=init,systemd-sysv,openssh-server,net-tools,iputils-ping,wget,curl,locales,sudo \
+            bookworm \
+            debian-rootfs \
+            http://deb.debian.org/debian/
+
+      - name: Complete second stage of debootstrap (in chroot emulation)
+        run: |
+          sudo cp /usr/bin/qemu-arm-static debian-rootfs/usr/bin/
+          sudo systemd-nspawn -D debian-rootfs /debootstrap/debootstrap --second-stage
+
+      - name: Basic system configuration
+        run: |
+          ROOTFS="debian-rootfs"
+          
+          # Set hostname
+          echo "santoni-debian" | sudo tee $ROOTFS/etc/hostname
+
+          # Set root password to 'debian' (change in production!)
+          echo 'root:debian' | sudo chpasswd -R $ROOTFS
+
+          # Enable serial console (useful for debugging via adb shell or UART)
+          echo 'T0:23:respawn:/sbin/getty -L ttyMSM0 115200 vt100' | sudo tee -a $ROOTFS/etc/inittab
+
+          # Configure locale
+          echo 'en_US.UTF-8 UTF-8' | sudo tee $ROOTFS/etc/locale.gen
+          sudo systemd-nspawn -D $ROOTFS locale-gen
+
+      - name: Compress rootfs as tar.xz
+        run: |
+          tar -cJf debian-santoni-rootfs-bookworm-armhf.tar.xz -C debian-rootfs .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-santoni-rootfs-bookworm-armhf
+          path: debian-santoni-rootfs-bookworm-armhf.tar.xz
+          retention-days: 7
+
+      - name: Show file info
+        run: ls -lh debian-santoni-rootfs-bookworm-armhf.tar.xz
