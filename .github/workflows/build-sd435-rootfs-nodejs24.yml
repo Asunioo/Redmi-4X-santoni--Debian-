@@ -1,0 +1,93 @@
+name: Build SD435 (MSM8940) Debian Rootfs
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-sd435-rootfs.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-rootfs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update && sudo apt upgrade -y
+          sudo apt install -y \
+            debootstrap qemu-user-static binfmt-support \
+            android-sdk-libsparse-utils kpartx dosfstools \
+            git build-essential libssl-dev bc \
+            tar gzip
+
+      - name: Create Rootfs Image
+        run: |
+          dd if=/dev/zero of=sd435-debian-rootfs.ext4 bs=1M count=4096
+          sudo mkfs.ext4 -L rootfs sd435-debian-rootfs.ext4
+          sudo mkdir -p /mnt/rootfs
+          sudo mount sd435-debian-rootfs.ext4 /mnt/rootfs
+
+      - name: Bootstrap Debian Base System
+        run: |
+          sudo debootstrap --arch arm64 --foreign bookworm \
+            /mnt/rootfs https://mirrors.tuna.tsinghua.edu.cn/debian/
+          sudo cp /usr/bin/qemu-aarch64-static /mnt/rootfs/usr/bin/
+          # 修复挂载顺序 + 明确挂载 devpts
+          sudo mount --bind /dev /mnt/rootfs/dev
+          sudo mount -t devpts devpts /mnt/rootfs/dev/pts
+          sudo mount --bind /sys /mnt/rootfs/sys
+          sudo mount --bind /proc /mnt/rootfs/proc
+          sudo chroot /mnt/rootfs /debootstrap/debootstrap --second-stage
+
+      - name: Configure Rootfs (SD435 Specific)
+        run: |
+          sudo chroot /mnt/rootfs /bin/bash -c '
+            echo "root:debian-sd435" | chpasswd
+            cat > /etc/apt/sources.list << EOF
+          deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
+          deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
+          deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
+          EOF
+            apt update && apt install -y \
+              linux-image-arm64 initramfs-tools udev \
+              firmware-qcom-soc firmware-qcom-gpu firmware-qcom-media \
+              network-manager openssh-server sudo vim iproute2 iputils-ping wget curl
+            cat > /etc/fstab << EOF
+          /dev/mmcblk0p2  /       ext4    defaults,noatime 0 1
+          /dev/mmcblk0p1  /boot   vfat    defaults          0 2
+          EOF
+            sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config
+            apt clean && rm -rf /var/lib/apt/lists/*
+          '
+
+      - name: Unmount with Fault Tolerance
+        run: |
+          # 关键修复：先检查是否挂载，再卸载，避免报错
+          mountpoint -q /mnt/rootfs/dev/pts && sudo umount /mnt/rootfs/dev/pts || true
+          mountpoint -q /mnt/rootfs/dev && sudo umount /mnt/rootfs/dev || true
+          mountpoint -q /mnt/rootfs/sys && sudo umount /mnt/rootfs/sys || true
+          mountpoint -q /mnt/rootfs/proc && sudo umount /mnt/rootfs/proc || true
+          mountpoint -q /mnt/rootfs && sudo umount /mnt/rootfs || true
+
+      - name: Package Rootfs
+        run: |
+          sudo mkdir -p /tmp/rootfs-mount
+          sudo mount sd435-debian-rootfs.ext4 /tmp/rootfs-mount
+          sudo tar -C /tmp/rootfs-mount -czf sd435-debian-bookworm-rootfs.tar.gz .
+          sudo umount /tmp/rootfs-mount
+          md5sum sd435-debian-bookworm-rootfs.tar.gz > sd435-rootfs.md5
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd435-debian-rootfs
+          path: |
+            sd435-debian-bookworm-rootfs.tar.gz
+            sd435-rootfs.md5
+            sd435-debian-rootfs.ext4
+          retention-days: 30
