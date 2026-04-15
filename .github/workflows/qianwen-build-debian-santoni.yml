@@ -1,44 +1,43 @@
-name: Build Debian rootfs for Redmi 4X (santoni)
+name: Build Debian for Redmi 4X (santoni)
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:  # 允许你手动点击运行
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install required tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap qemu-user-static binfmt-support wget curl
+          sudo apt-get install -y \
+            debootstrap \
+            qemu-user-static \
+            binfmt-support \
+            systemd-container \
+            wget \
+            curl
 
-      # 可选：如果你有自己的设备支持脚本（如初始化脚本、fstab、网络配置等）
-      # - name: Clone device support scripts (example: from GitHub)
-      #   run: |
-      #     git clone https://github.com/yourname/santoni-debian-config.git device-config
-
-      - name: Verify Debian mirror accessibility
+      - name: Check if Debian server is reachable
         run: |
-          echo "Checking if Debian mirror is reachable..."
-          wget -q --spider http://deb.debian.org/debian/dists/stable/Release
+          echo "Checking Debian mirror..."
+          wget -q --spider http://deb.debian.org/debian/dists/bookworm/Release
           if [ $? -ne 0 ]; then
-            echo "ERROR: Debian mirror unreachable!"
+            echo "❌ Debian mirror not reachable!"
             exit 1
           fi
-          echo "Debian mirror is OK."
+          echo "✅ OK"
 
-      - name: Create build directory
+      - name: Create rootfs directory
         run: mkdir -p debian-rootfs
 
-      - name: Bootstrap Debian armhf rootfs
+      - name: First stage - Download Debian packages (armhf)
         run: |
           sudo debootstrap \
             --arch=armhf \
@@ -48,38 +47,35 @@ jobs:
             debian-rootfs \
             http://deb.debian.org/debian/
 
-      - name: Complete second stage of debootstrap (in chroot emulation)
+      - name: Second stage - Finish setup inside emulated environment
         run: |
           sudo cp /usr/bin/qemu-arm-static debian-rootfs/usr/bin/
           sudo systemd-nspawn -D debian-rootfs /debootstrap/debootstrap --second-stage
 
-      - name: Basic system configuration
+      - name: Basic configuration
         run: |
           ROOTFS="debian-rootfs"
-          
-          # Set hostname
-          echo "santoni-debian" | sudo tee $ROOTFS/etc/hostname
 
-          # Set root password to 'debian' (change in production!)
+          # Set device name
+          echo "redmi4x-debian" | sudo tee $ROOTFS/etc/hostname
+
+          # Set root password to "debian" (change later on device!)
           echo 'root:debian' | sudo chpasswd -R $ROOTFS
 
-          # Enable serial console (useful for debugging via adb shell or UART)
-          echo 'T0:23:respawn:/sbin/getty -L ttyMSM0 115200 vt100' | sudo tee -a $ROOTFS/etc/inittab
-
-          # Configure locale
+          # Generate English locale
           echo 'en_US.UTF-8 UTF-8' | sudo tee $ROOTFS/etc/locale.gen
           sudo systemd-nspawn -D $ROOTFS locale-gen
 
-      - name: Compress rootfs as tar.xz
+      - name: Compress final image
         run: |
-          tar -cJf debian-santoni-rootfs-bookworm-armhf.tar.xz -C debian-rootfs .
+          tar -cJf debian-redmi4x-rootfs.tar.xz -C debian-rootfs .
 
-      - name: Upload artifact
+      - name: Upload as downloadable file
         uses: actions/upload-artifact@v4
         with:
-          name: debian-santoni-rootfs-bookworm-armhf
-          path: debian-santoni-rootfs-bookworm-armhf.tar.xz
+          name: debian-redmi4x-rootfs
+          path: debian-redmi4x-rootfs.tar.xz
           retention-days: 7
 
-      - name: Show file info
-        run: ls -lh debian-santoni-rootfs-bookworm-armhf.tar.xz
+      - name: Show file size
+        run: ls -lh debian-redmi4x-rootfs.tar.xz
